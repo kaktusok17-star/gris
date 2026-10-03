@@ -3,27 +3,101 @@
 #include "config.h"
 #include "db.h"
 #include "deps.h"
+#include "download.h"
 #include "fs.h"
 #include "hash.h"
+#include "index.h"
 #include "pkg.h"
 #include "util.h"
 
 #include <errno.h>
+#include <regex.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-static int not_implemented(const char *name) {
-    fprintf(stderr, "gris: %s: не реализовано (следующий шаг)\n", name);
-    return 1;
+/* ── sync ────────────────────────────────────────────────────── */
+int cmd_sync(int argc, char **argv) {
+    (void)argc; (void)argv;
+
+    char *repo_dir = db_path("repo");
+    if (fs_mkdir_p(repo_dir, 0755) != 0) {
+        fprintf(stderr, "gris: не могу создать %s\n", repo_dir);
+        free(repo_dir);
+        return 1;
+    }
+
+    char url[4096];
+    snprintf(url, sizeof(url), "%s/core.index", g_cfg.repo_url);
+
+    char index_path[4096];
+    snprintf(index_path, sizeof(index_path), "%s/core.index", repo_dir);
+
+    printf("syncing: %s\n", url);
+    if (download_to_file(url, index_path) != 0) {
+        fprintf(stderr, "gris: не могу скачать индекс\n");
+        free(repo_dir);
+        return 1;
+    }
+
+    printf("ok\n");
+    free(repo_dir);
+    return 0;
 }
 
-int cmd_sync   (int argc, char **argv) { (void)argc; (void)argv; return not_implemented("sync");    }
-int cmd_upgrade(int argc, char **argv) { (void)argc; (void)argv; return not_implemented("upgrade"); }
-int cmd_search (int argc, char **argv) { (void)argc; (void)argv; return not_implemented("search");  }
-int cmd_clean  (int argc, char **argv) { (void)argc; (void)argv; return not_implemented("clean");   }
+/* ── clean ───────────────────────────────────────────────────── */
+int cmd_clean(int argc, char **argv) {
+    (void)argc; (void)argv;
+    char *cache = db_path("cache");
+    if (fs_exists(cache) && fs_rm_rf(cache) != 0) {
+        fprintf(stderr, "gris: не могу очистить %s\n", cache);
+        free(cache);
+        return 1;
+    }
+    free(cache);
+    printf("cache cleaned\n");
+    return 0;
+}
+
+/* ── search ──────────────────────────────────────────────────── */
+int cmd_search(int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "gris: search: укажите regex\n");
+        return 2;
+    }
+
+    regex_t re;
+    if (regcomp(&re, argv[0], REG_EXTENDED | REG_NOSUB) != 0) {
+        fprintf(stderr, "gris: некорректный regex: %s\n", argv[0]);
+        return 2;
+    }
+
+    char *index_path = db_path("repo/core.index");
+    Index idx;
+    if (index_load(index_path, &idx) != 0) {
+        fprintf(stderr, "gris: не могу прочитать %s. Запустите 'gris sync'.\n",
+                index_path);
+        free(index_path);
+        regfree(&re);
+        return 1;
+    }
+    free(index_path);
+
+    int found = 0;
+    for (size_t i = 0; i < idx.entries.len; i++) {
+        IndexEntry *e = *(IndexEntry **)vec_get(&idx.entries, i);
+        if (regexec(&re, e->name, 0, NULL, 0) == 0) {
+            printf("%-20s %-12s %ld\n", e->name, e->version, e->size);
+            found++;
+        }
+    }
+
+    index_free(&idx);
+    regfree(&re);
+    return found > 0 ? 0 : 1;
+}
 
 /* ── list ────────────────────────────────────────────────────── */
 int cmd_list(int argc, char **argv) {
@@ -95,7 +169,7 @@ static int verify_sidecar_sha256(const char *gris_file) {
     char sidecar[4096];
     snprintf(sidecar, sizeof(sidecar), "%s.sha256", gris_file);
 
-    if (!fs_exists(sidecar)) return 0;      /* нет сайдкара — пропускаем */
+    if (!fs_exists(sidecar)) return 0;
 
     char expected[65];
     FILE *f = fopen(sidecar, "r");
@@ -122,7 +196,7 @@ static int verify_sidecar_sha256(const char *gris_file) {
     return 0;
 }
 
-/* ── install ─────────────────────────────────────────────────── */
+/* ── install одного локального .gris ─────────────────────────── */
 static int install_one(const char *gris_file) {
     if (!fs_exists(gris_file)) {
         fprintf(stderr, "gris: install: файл не найден: %s\n", gris_file);
@@ -225,31 +299,95 @@ static int install_one(const char *gris_file) {
     return 0;
 }
 
+/* ── установка по имени из репозитория ───────────────────────── */
+static int install_by_name(const char *name) {
+    if (db_is_installed(name)) {
+        fprintf(stderr, "gris: install: %s уже установлен\n", name);
+        return -1;
+    }
+
+    char *index_path = db_path("repo/core.index");
+    Index idx;
+    if (index_load(index_path, &idx) != 0) {
+        fprintf(stderr, "gris: не могу прочитать %s. Запустите 'gris sync'.\n",
+                index_path);
+        free(index_path);
+        return -1;
+    }
+    free(index_path);
+
+    Vec order;
+    vec_init(&order, sizeof(IndexEntry *));
+    if (deps_resolve_index(&idx, name, &order) != 0) {
+        vec_free(&order);
+        index_free(&idx);
+        return -1;
+    }
+
+    char *cache_dir = db_path("cache");
+    fs_mkdir_p(cache_dir, 0755);
+
+    int rc = 0;
+    for (size_t i = 0; i < order.len; i++) {
+        IndexEntry *e = *(IndexEntry **)vec_get(&order, i);
+
+        if (db_is_installed(e->name)) continue;   /* зависимость уже стоит */
+
+        const char *basename = strrchr(e->url, '/');
+        basename = basename ? basename + 1 : e->url;
+
+        char cached[4096];
+        snprintf(cached, sizeof(cached), "%s/%s", cache_dir, basename);
+
+        if (!fs_exists(cached)) {
+            printf("downloading: %s\n", e->url);
+            if (download_to_file(e->url, cached) != 0) {
+                fprintf(stderr, "gris: не могу скачать %s\n", e->url);
+                rc = 1;
+                break;
+            }
+        }
+
+        if (e->sha256 && *e->sha256) {
+            char sidecar[4096];
+            snprintf(sidecar, sizeof(sidecar), "%s.sha256", cached);
+            FILE *f = fopen(sidecar, "w");
+            if (f) { fprintf(f, "%s\n", e->sha256); fclose(f); }
+        }
+
+        if (install_one(cached) != 0) { rc = 1; break; }
+    }
+
+    free(cache_dir);
+    vec_free(&order);
+    index_free(&idx);
+    return rc;
+}
+
+/* ── dispatch install ────────────────────────────────────────── */
 int cmd_install(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "gris: install: укажите .gris файл\n");
+        fprintf(stderr, "gris: install: укажите .gris файл или имя пакета\n");
         return 2;
     }
 
-    /* Разрешаем граф зависимостей для всех входных файлов. */
-    Vec nodes;
-    vec_init(&nodes, sizeof(DepNode));
-
+    int rc = 0;
     for (int i = 0; i < argc; i++) {
-        if (deps_resolve(argv[i], &nodes) != 0) {
+        if (ends_with(argv[i], ".gris")) {
+            Vec nodes;
+            vec_init(&nodes, sizeof(DepNode));
+            if (deps_resolve(argv[i], &nodes) != 0) {
+                vec_free(&nodes); rc = 1; continue;
+            }
+            for (size_t j = 0; j < nodes.len; j++) {
+                DepNode *n = vec_get(&nodes, j);
+                if (install_one(n->path) != 0) rc = 1;
+            }
             vec_free(&nodes);
-            return 1;
+        } else {
+            if (install_by_name(argv[i]) != 0) rc = 1;
         }
     }
-
-    /* Устанавливаем в порядке появления (зависимости — уже первыми). */
-    int rc = 0;
-    for (size_t i = 0; i < nodes.len; i++) {
-        DepNode *n = vec_get(&nodes, i);
-        if (install_one(n->path) != 0) rc = 1;
-    }
-
-    vec_free(&nodes);
     return rc;
 }
 
@@ -299,4 +437,10 @@ int cmd_remove(int argc, char **argv) {
     for (int i = 0; i < argc; i++)
         if (remove_one(argv[i]) != 0) rc = 1;
     return rc;
+}
+
+int cmd_upgrade(int argc, char **argv) {
+    (void)argc; (void)argv;
+    fprintf(stderr, "gris: upgrade: не реализовано (следующий шаг)\n");
+    return 1;
 }

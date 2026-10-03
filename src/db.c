@@ -16,20 +16,21 @@ static char *join(const char *a, const char *b) {
     return p;
 }
 
+char *db_path(const char *sub) {
+    return join(g_cfg.db_dir, sub);
+}
+
 char *db_pkg_dir(const char *name) {
-    char *installed = join(g_cfg.db_dir, "installed");
+    char *installed = db_path("installed");
     char *dir       = join(installed, name);
     free(installed);
     return dir;
 }
 
 int db_list_installed(Vec *out) {
-    char *dir = join(g_cfg.db_dir, "installed");
+    char *dir = db_path("installed");
     DIR  *d   = opendir(dir);
-    if (!d) {
-        free(dir);
-        return 0;             /* пусто — не ошибка */
-    }
+    if (!d) { free(dir); return 0; }
 
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
@@ -50,7 +51,7 @@ int db_list_installed(Vec *out) {
 int db_read_pkginfo(const char *name, PkgInfo *out) {
     char *dir  = db_pkg_dir(name);
     char *path = join(dir, "PKGINFO");
-    int rc = pkginfo_parse(path, out);
+    int   rc   = pkginfo_parse(path, out);
     free(path);
     free(dir);
     return rc;
@@ -59,7 +60,7 @@ int db_read_pkginfo(const char *name, PkgInfo *out) {
 int db_read_filelist(const char *name, Vec *out) {
     char *dir  = db_pkg_dir(name);
     char *path = join(dir, "FILELIST");
-    int rc = filelist_parse(path, out);
+    int   rc   = filelist_parse(path, out);
     free(path);
     free(dir);
     return rc;
@@ -68,7 +69,7 @@ int db_read_filelist(const char *name, Vec *out) {
 int db_is_installed(const char *name) {
     char *dir = db_pkg_dir(name);
     struct stat st;
-    int rc = (stat(dir, &st) == 0 && S_ISDIR(st.st_mode));
+    int   rc  = (stat(dir, &st) == 0 && S_ISDIR(st.st_mode));
     free(dir);
     return rc;
 }

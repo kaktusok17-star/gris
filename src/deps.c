@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ── файловый режим (для локальных .gris) ───────────────────── */
 int peek_pkginfo(const char *gris_file, PkgInfo *out) {
     char *argv[] = {
         "tar", "-xOJf", (char *)gris_file, ".PKGINFO", NULL
@@ -50,7 +51,6 @@ char *deps_find_gris(const char *dir, const char *name) {
 
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
-        /* паттерн: name-*.gris */
         if (strncmp(e->d_name, name, name_len) != 0) continue;
         if (e->d_name[name_len] != '-') continue;
         if (!ends_with(e->d_name, ".gris")) continue;
@@ -64,7 +64,6 @@ char *deps_find_gris(const char *dir, const char *name) {
     return result;
 }
 
-/* Найти узел в графе по имени. NULL если нет. */
 static DepNode *find_node(Vec *nodes, const char *name) {
     for (size_t i = 0; i < nodes->len; i++) {
         DepNode *n = vec_get(nodes, i);
@@ -80,7 +79,6 @@ static int resolve_recursive(const char *gris_file, Vec *nodes) {
         return -1;
     }
 
-    /* Уже в графе? */
     DepNode *existing = find_node(nodes, info.name);
     if (existing) {
         if (existing->state == 1) {
@@ -95,7 +93,7 @@ static int resolve_recursive(const char *gris_file, Vec *nodes) {
     DepNode *n  = vec_push(nodes);
     n->name     = xstrdup(info.name);
     n->path     = xstrdup(gris_file);
-    n->info     = info;              /* передаём владение */
+    n->info     = info;
     n->state    = 1;
 
     char *dir = deps_dirname(gris_file);
@@ -129,4 +127,56 @@ static int resolve_recursive(const char *gris_file, Vec *nodes) {
 
 int deps_resolve(const char *gris_file, Vec *nodes) {
     return resolve_recursive(gris_file, nodes);
+}
+
+/* ── режим по индексу (для install по имени) ────────────────── */
+static int resolve_index_rec(Index *idx, const char *name,
+                             Vec *order, Vec *in_progress) {
+    /* Уже разрешено? */
+    for (size_t i = 0; i < order->len; i++) {
+        IndexEntry *e = *(IndexEntry **)vec_get(order, i);
+        if (strcmp(e->name, name) == 0) return 0;
+    }
+
+    /* В процессе? → цикл */
+    for (size_t i = 0; i < in_progress->len; i++) {
+        char *n = *(char **)vec_get(in_progress, i);
+        if (strcmp(n, name) == 0) {
+            fprintf(stderr, "gris: циклическая зависимость: %s\n", name);
+            return -1;
+        }
+    }
+
+    IndexEntry *e = index_find(idx, name);
+    if (!e) {
+        fprintf(stderr, "gris: пакет '%s' не найден в индексе\n", name);
+        return -1;
+    }
+
+    *(char **)vec_push(in_progress) = e->name;
+
+    char *deps = xstrdup(e->deps);
+    char *save = NULL;
+    for (char *tok = strtok_r(deps, " \t", &save); tok;
+         tok = strtok_r(NULL, " \t", &save)) {
+        char dep_name[256];
+        if (deps_parse_name(tok, dep_name, sizeof(dep_name)) != 0) continue;
+        if (resolve_index_rec(idx, dep_name, order, in_progress) != 0) {
+            free(deps);
+            return -1;
+        }
+    }
+    free(deps);
+
+    in_progress->len--;
+    *(IndexEntry **)vec_push(order) = e;
+    return 0;
+}
+
+int deps_resolve_index(Index *idx, const char *name, Vec *out_order) {
+    Vec in_progress;
+    vec_init(&in_progress, sizeof(char *));
+    int rc = resolve_index_rec(idx, name, out_order, &in_progress);
+    vec_free(&in_progress);
+    return rc;
 }
