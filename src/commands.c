@@ -2,7 +2,9 @@
 #include "archive.h"
 #include "config.h"
 #include "db.h"
+#include "deps.h"
 #include "fs.h"
+#include "hash.h"
 #include "pkg.h"
 #include "util.h"
 
@@ -10,9 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>  
+#include <sys/stat.h>
 #include <unistd.h>
-
 
 static int not_implemented(const char *name) {
     fprintf(stderr, "gris: %s: не реализовано (следующий шаг)\n", name);
@@ -34,7 +35,6 @@ int cmd_list(int argc, char **argv) {
 
     for (size_t i = 0; i < v.len; i++) {
         char *name = *(char **)vec_get(&v, i);
-
         PkgInfo pi;
         if (db_read_pkginfo(name, &pi) == 0) {
             printf("%s %s\n", name, pi.version ? pi.version : "?");
@@ -90,12 +90,47 @@ int cmd_files(int argc, char **argv) {
     return 0;
 }
 
+/* ── sha256 sidecar ──────────────────────────────────────────── */
+static int verify_sidecar_sha256(const char *gris_file) {
+    char sidecar[4096];
+    snprintf(sidecar, sizeof(sidecar), "%s.sha256", gris_file);
+
+    if (!fs_exists(sidecar)) return 0;      /* нет сайдкара — пропускаем */
+
+    char expected[65];
+    FILE *f = fopen(sidecar, "r");
+    if (!f) return 0;
+    int got = fscanf(f, "%64s", expected);
+    fclose(f);
+    if (got != 1) {
+        fprintf(stderr, "gris: пустой .sha256: %s\n", sidecar);
+        return -1;
+    }
+
+    char actual[65];
+    if (hash_file_sha256(gris_file, actual) != 0) {
+        fprintf(stderr, "gris: не могу посчитать sha256 для %s\n", gris_file);
+        return -1;
+    }
+
+    if (strcmp(expected, actual) != 0) {
+        fprintf(stderr, "gris: sha256 не совпал для %s\n", gris_file);
+        fprintf(stderr, "  ожидался: %s\n", expected);
+        fprintf(stderr, "  получен:  %s\n", actual);
+        return -1;
+    }
+    return 0;
+}
+
 /* ── install ─────────────────────────────────────────────────── */
 static int install_one(const char *gris_file) {
     if (!fs_exists(gris_file)) {
         fprintf(stderr, "gris: install: файл не найден: %s\n", gris_file);
         return -1;
     }
+
+    if (verify_sidecar_sha256(gris_file) != 0)
+        return -1;
 
     char tmp[] = "/tmp/gris-install-XXXXXX";
     if (!mkdtemp(tmp)) {
@@ -137,7 +172,6 @@ static int install_one(const char *gris_file) {
         return -1;
     }
 
-    /* Перенос файлов из tmp в $GRIS_ROOT */
     for (size_t i = 0; i < files.len; i++) {
         FileEntry *fe = vec_get(&files, i);
 
@@ -168,7 +202,6 @@ static int install_one(const char *gris_file) {
         }
     }
 
-    /* Запись метаданных в БД */
     char *pkg_dir = db_pkg_dir(pi.name);
     fs_mkdir_p(pkg_dir, 0755);
 
@@ -198,9 +231,25 @@ int cmd_install(int argc, char **argv) {
         return 2;
     }
 
+    /* Разрешаем граф зависимостей для всех входных файлов. */
+    Vec nodes;
+    vec_init(&nodes, sizeof(DepNode));
+
+    for (int i = 0; i < argc; i++) {
+        if (deps_resolve(argv[i], &nodes) != 0) {
+            vec_free(&nodes);
+            return 1;
+        }
+    }
+
+    /* Устанавливаем в порядке появления (зависимости — уже первыми). */
     int rc = 0;
-    for (int i = 0; i < argc; i++)
-        if (install_one(argv[i]) != 0) rc = 1;
+    for (size_t i = 0; i < nodes.len; i++) {
+        DepNode *n = vec_get(&nodes, i);
+        if (install_one(n->path) != 0) rc = 1;
+    }
+
+    vec_free(&nodes);
     return rc;
 }
 
@@ -214,8 +263,7 @@ static int remove_one(const char *name) {
     Vec files;
     vec_init(&files, sizeof(FileEntry));
     if (db_read_filelist(name, &files) != 0) {
-        fprintf(stderr, "gris: remove: не могу прочитать FILELIST пакета '%s'\n",
-                name);
+        fprintf(stderr, "gris: remove: не могу прочитать FILELIST пакета '%s'\n", name);
         vec_free(&files);
         return -1;
     }

@@ -22,6 +22,35 @@ static void add_dep(PkgInfo *p, const char *dep) {
     p->depends[p->ndepends++] = xstrdup(dep);
 }
 
+/* Разбор одной строки "key = value" из .PKGINFO. */
+static void parse_kv_line(char *line, PkgInfo *out) {
+    char *s = trim(line);
+    if (!*s || *s == '#') return;
+
+    char *eq = strstr(s, " = ");
+    if (!eq) return;
+    *eq = '\0';
+    char *key = s;
+    char *val = eq + 3;
+
+    if      (!strcmp(key, "pkgname"))   set_str(&out->name, val);
+    else if (!strcmp(key, "pkgver"))    set_str(&out->version, val);
+    else if (!strcmp(key, "arch"))      set_str(&out->arch, val);
+    else if (!strcmp(key, "pkgdesc"))   set_str(&out->desc, val);
+    else if (!strcmp(key, "url"))       set_str(&out->url, val);
+    else if (!strcmp(key, "license"))   set_str(&out->license, val);
+    else if (!strcmp(key, "sha256"))    set_str(&out->sha256, val);
+    else if (!strcmp(key, "size"))      out->size      = atol(val);
+    else if (!strcmp(key, "builddate")) out->builddate = atol(val);
+    else if (!strcmp(key, "packager"))  set_str(&out->packager, val);
+    else if (!strcmp(key, "depends")) {
+        char *save = NULL;
+        for (char *tok = strtok_r(val, " \t", &save); tok;
+             tok = strtok_r(NULL, " \t", &save))
+            add_dep(out, tok);
+    }
+}
+
 /* ── .PKGINFO ───────────────────────────────────────────────── */
 int pkginfo_parse(const char *path, PkgInfo *out) {
     memset(out, 0, sizeof(*out));
@@ -31,37 +60,24 @@ int pkginfo_parse(const char *path, PkgInfo *out) {
 
     char  *line = NULL;
     size_t cap  = 0;
-
-    while (getline(&line, &cap, f) != -1) {
-        char *s = trim(line);
-        if (!*s || *s == '#') continue;
-
-        char *eq = strstr(s, " = ");
-        if (!eq) continue;
-        *eq = '\0';
-        char *key = s;
-        char *val = eq + 3;
-
-        if      (!strcmp(key, "pkgname"))   set_str(&out->name, val);
-        else if (!strcmp(key, "pkgver"))    set_str(&out->version, val);
-        else if (!strcmp(key, "arch"))      set_str(&out->arch, val);
-        else if (!strcmp(key, "pkgdesc"))   set_str(&out->desc, val);
-        else if (!strcmp(key, "url"))       set_str(&out->url, val);
-        else if (!strcmp(key, "license"))   set_str(&out->license, val);
-        else if (!strcmp(key, "sha256"))    set_str(&out->sha256, val);
-        else if (!strcmp(key, "size"))      out->size      = atol(val);
-        else if (!strcmp(key, "builddate")) out->builddate = atol(val);
-        else if (!strcmp(key, "packager"))  set_str(&out->packager, val);
-        else if (!strcmp(key, "depends")) {
-            char *save = NULL;
-            for (char *tok = strtok_r(val, " \t", &save); tok;
-                 tok = strtok_r(NULL, " \t", &save))
-                add_dep(out, tok);
-        }
-    }
+    while (getline(&line, &cap, f) != -1)
+        parse_kv_line(line, out);
 
     free(line);
     fclose(f);
+    return out->name ? 0 : -1;
+}
+
+int pkginfo_parse_buf(const char *text, PkgInfo *out) {
+    memset(out, 0, sizeof(*out));
+
+    char *copy = xstrdup(text);
+    char *save = NULL;
+    for (char *line = strtok_r(copy, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save))
+        parse_kv_line(line, out);
+
+    free(copy);
     return out->name ? 0 : -1;
 }
 

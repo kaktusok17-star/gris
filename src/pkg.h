@@ -21,13 +21,14 @@ typedef struct {
 
 typedef struct {
     char   *path;
-    char   *hash;      /* может быть NULL, если в .FILELIST только путь */
+    char   *hash;
     size_t  size;
     mode_t  mode;
 } FileEntry;
 
-/* .PKGINFO: 0 = ok, -1 = не открывается */
-int  pkginfo_parse(const char *path, PkgInfo *out);
+/* .PKGINFO: 0 = ok, -1 = не открывается / нет pkgname */
+int  pkginfo_parse    (const char *path, PkgInfo *out);
+int  pkginfo_parse_buf(const char *text, PkgInfo *out);
 void pkginfo_free(PkgInfo *p);
 void pkginfo_print(const PkgInfo *p);
 
