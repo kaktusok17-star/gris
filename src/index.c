@@ -13,6 +13,21 @@ static void entry_free(IndexEntry *e) {
     free(e->sha256);
 }
 
+/* Ручной split по '|'. В отличие от strtok, сохраняет пустые поля.
+   Возвращает число найденных полей (до max). */
+static int split_pipe(char *s, char **fields, int max) {
+    int n = 0;
+    char *p = s;
+    while (n < max) {
+        fields[n++] = p;
+        char *bar = strchr(p, '|');
+        if (!bar) break;
+        *bar = '\0';
+        p = bar + 1;
+    }
+    return n;
+}
+
 int index_load(const char *path, Index *out) {
     memset(out, 0, sizeof(*out));
     vec_init(&out->entries, sizeof(IndexEntry *));
@@ -27,34 +42,18 @@ int index_load(const char *path, Index *out) {
         char *s = trim(line);
         if (!*s || *s == '#') continue;
 
-        /* формат: name|version|arch|deps|size|url|sha256 */
+        char *fields[7] = { NULL };
+        int   nf = split_pipe(s, fields, 7);
+        if (nf < 6) continue;
+
         IndexEntry *e = xcalloc(1, sizeof(IndexEntry));
-        char *save = NULL;
-        char *tok;
-        int   field = 0;
-        int   bad   = 0;
-
-        for (tok = strtok_r(s, "|", &save); tok;
-             tok = strtok_r(NULL, "|", &save)) {
-            switch (field++) {
-                case 0: e->name    = xstrdup(tok); break;
-                case 1: e->version = xstrdup(tok); break;
-                case 2: e->arch    = xstrdup(tok); break;
-                case 3: e->deps    = xstrdup(tok); break;
-                case 4: e->size    = atol(tok);    break;
-                case 5: e->url     = xstrdup(tok); break;
-                case 6: e->sha256  = xstrdup(tok); break;
-                default: bad = 1; break;
-            }
-        }
-
-        if (field < 6 || bad) {
-            entry_free(e);
-            free(e);
-            continue;
-        }
-        if (!e->deps)    e->deps    = xstrdup("");
-        if (!e->sha256)  e->sha256  = xstrdup("");
+        e->name    = xstrdup(fields[0] ? fields[0] : "");
+        e->version = xstrdup(fields[1] ? fields[1] : "");
+        e->arch    = xstrdup(fields[2] ? fields[2] : "");
+        e->deps    = xstrdup(fields[3] ? fields[3] : "");
+        e->size    = fields[4] ? atol(fields[4]) : 0;
+        e->url     = xstrdup(fields[5] ? fields[5] : "");
+        e->sha256  = xstrdup((nf > 6 && fields[6]) ? fields[6] : "");
 
         *(IndexEntry **)vec_push(&out->entries) = e;
     }

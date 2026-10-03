@@ -8,8 +8,11 @@
 #include "hash.h"
 #include "index.h"
 #include "pkg.h"
+#include "shell.h"
 #include "util.h"
+#include "vercmp.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <regex.h>
 #include <stdio.h>
@@ -331,7 +334,7 @@ static int install_by_name(const char *name) {
     for (size_t i = 0; i < order.len; i++) {
         IndexEntry *e = *(IndexEntry **)vec_get(&order, i);
 
-        if (db_is_installed(e->name)) continue;   /* зависимость уже стоит */
+        if (db_is_installed(e->name)) continue;
 
         const char *basename = strrchr(e->url, '/');
         basename = basename ? basename + 1 : e->url;
@@ -439,8 +442,143 @@ int cmd_remove(int argc, char **argv) {
     return rc;
 }
 
+/* ── upgrade ─────────────────────────────────────────────────── */
 int cmd_upgrade(int argc, char **argv) {
     (void)argc; (void)argv;
-    fprintf(stderr, "gris: upgrade: не реализовано (следующий шаг)\n");
-    return 1;
+
+    char *index_path = db_path("repo/core.index");
+    Index idx;
+    if (index_load(index_path, &idx) != 0) {
+        fprintf(stderr, "gris: не могу прочитать %s. Запустите 'gris sync'.\n",
+                index_path);
+        free(index_path);
+        return 1;
+    }
+    free(index_path);
+
+    Vec installed;
+    vec_init(&installed, sizeof(char *));
+    db_list_installed(&installed);
+
+    int rc = 0;
+    int upgraded = 0;
+
+    for (size_t i = 0; i < installed.len; i++) {
+        char *name = *(char **)vec_get(&installed, i);
+
+        PkgInfo pi;
+        if (db_read_pkginfo(name, &pi) != 0) { free(name); continue; }
+
+        IndexEntry *e = index_find(&idx, name);
+        if (!e) { pkginfo_free(&pi); free(name); continue; }
+
+        if (vercmp(e->version, pi.version) > 0) {
+            printf("upgrading: %s (%s -> %s)\n", name, pi.version, e->version);
+
+            char *rargv[] = { name };
+            if (cmd_remove(1, rargv) != 0) { rc = 1; upgraded = -1; }
+            else if (install_by_name(name) != 0) { rc = 1; upgraded = -1; }
+            else upgraded++;
+        }
+
+        pkginfo_free(&pi);
+        free(name);
+        if (upgraded < 0) break;
+    }
+
+    if (upgraded == 0)
+        printf("everything up to date\n");
+
+    vec_free(&installed);
+    index_free(&idx);
+    return rc;
+}
+
+/* ── build ───────────────────────────────────────────────────── */
+static void build_walk(const char *dir, const char *prefix, FILE *flist) {
+    DIR *d = opendir(dir);
+    if (!d) return;
+
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+
+        char full[4096];
+        snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+
+        char rel[4096];
+        if (prefix[0])
+            snprintf(rel, sizeof(rel), "%s/%s", prefix, e->d_name);
+        else
+            snprintf(rel, sizeof(rel), "%s", e->d_name);
+
+        struct stat st;
+        if (lstat(full, &st) < 0) continue;
+
+        if (S_ISDIR(st.st_mode)) {
+            build_walk(full, rel, flist);
+        } else if (S_ISREG(st.st_mode)) {
+            char hash[65];
+            if (hash_file_sha256(full, hash) == 0)
+                fprintf(flist, "%s  %s\n", hash, rel);
+        }
+    }
+
+    closedir(d);
+}
+
+int cmd_build(int argc, char **argv) {
+    if (argc < 1) {
+        fprintf(stderr, "gris: build: укажите DESTDIR\n");
+        return 2;
+    }
+
+    const char *destdir = argv[0];
+
+    char pi_path[4096];
+    snprintf(pi_path, sizeof(pi_path), "%s/.PKGINFO", destdir);
+
+    PkgInfo pi;
+    if (pkginfo_parse(pi_path, &pi) != 0 || !pi.name || !pi.version) {
+        fprintf(stderr, "gris: build: нет корректного .PKGINFO в %s\n", destdir);
+        pkginfo_free(&pi);
+        return 1;
+    }
+
+    /* Генерируем .FILELIST */
+    char fl_path[4096];
+    snprintf(fl_path, sizeof(fl_path), "%s/.FILELIST", destdir);
+
+    FILE *fl = fopen(fl_path, "w");
+    if (!fl) {
+        fprintf(stderr, "gris: build: не могу создать %s\n", fl_path);
+        pkginfo_free(&pi);
+        return 1;
+    }
+    build_walk(destdir, "", fl);
+    fclose(fl);
+
+    const char *arch   = pi.arch ? pi.arch : "x86_64";
+    char        output[4096];
+    snprintf(output, sizeof(output), "%s-%s-%s.gris", pi.name, pi.version, arch);
+
+    char *targv[] = {
+        "tar", "-cJf", output, "-C", (char *)destdir, ".", NULL
+    };
+
+    printf("building: %s\n", output);
+    int rc = shell_run(targv);
+    if (rc != 0) {
+        fprintf(stderr, "gris: build: tar вернул %d\n", rc);
+        pkginfo_free(&pi);
+        return 1;
+    }
+
+    char final_hash[65];
+    if (hash_file_sha256(output, final_hash) == 0)
+        printf("sha256: %s\n", final_hash);
+
+    printf("ok\n");
+    pkginfo_free(&pi);
+    return 0;
 }

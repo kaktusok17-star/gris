@@ -13,14 +13,15 @@ static void usage(FILE *out) {
         "  gris <команда> [аргументы]\n"
         "\n"
         "Команды:\n"
-        "  sync                 обновить индексы репозиториев\n"
-        "  install <pkg>...     установить пакеты\n"
+        "  sync                 обновить индекс репозитория\n"
+        "  install <pkg|file>   установить пакеты по имени или .gris\n"
         "  remove  <pkg>...     удалить пакеты\n"
         "  upgrade              обновить установленные пакеты\n"
         "  info    <pkg>        показать информацию о пакете\n"
         "  list                 список установленных пакетов\n"
-        "  search  <regex>      поиск в репозиториях\n"
+        "  search  <regex>      поиск в индексе\n"
         "  files   <pkg>        файлы пакета\n"
+        "  build   <DESTDIR>    собрать .gris из дерева с .PKGINFO\n"
         "  clean                очистить кэш\n"
         "\n"
         "Опции:\n"
@@ -66,6 +67,7 @@ int main(int argc, char **argv) {
     else if (!strcmp(cmd, "search"))  rc = cmd_search(n, args);
     else if (!strcmp(cmd, "files"))   rc = cmd_files(n, args);
     else if (!strcmp(cmd, "clean"))   rc = cmd_clean(n, args);
+    else if (!strcmp(cmd, "build"))   rc = cmd_build(n, args);
     else {
         fprintf(stderr, "gris: неизвестная команда: %s\n", cmd);
         usage(stderr);
