@@ -1,4 +1,5 @@
 #include "deps.h"
+#include "db.h"
 #include "shell.h"
 
 #include <dirent.h>
@@ -103,10 +104,16 @@ static int resolve_recursive(const char *gris_file, Vec *nodes) {
         if (deps_parse_name(n->info.depends[i], dep_name, sizeof(dep_name)) != 0)
             continue;
 
+        /* Уже установлена в системе? Пропускаем. */
+        if (db_is_installed(dep_name)) {
+            log_debug("зависимость '%s' уже установлена, пропускаем", dep_name);
+            continue;
+        }
+
         char *dep_file = deps_find_gris(dir, dep_name);
         if (!dep_file) {
             fprintf(stderr,
-                "gris: не найдена зависимость '%s' (нужна пакету '%s') в %s\n",
+                "gris: не найдена зависимость '%s' (нужна пакету '%s') ни в системе, ни в %s\n",
                 dep_name, n->name, dir);
             free(dir);
             return -1;
@@ -132,13 +139,11 @@ int deps_resolve(const char *gris_file, Vec *nodes) {
 /* ── режим по индексу (для install по имени) ────────────────── */
 static int resolve_index_rec(Index *idx, const char *name,
                              Vec *order, Vec *in_progress) {
-    /* Уже разрешено? */
     for (size_t i = 0; i < order->len; i++) {
         IndexEntry *e = *(IndexEntry **)vec_get(order, i);
         if (strcmp(e->name, name) == 0) return 0;
     }
 
-    /* В процессе? → цикл */
     for (size_t i = 0; i < in_progress->len; i++) {
         char *n = *(char **)vec_get(in_progress, i);
         if (strcmp(n, name) == 0) {
