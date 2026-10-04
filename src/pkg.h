@@ -33,6 +33,7 @@ void pkginfo_free(PkgInfo *p);
 void pkginfo_print(const PkgInfo *p);
 
 /* .FILELIST: 0 = ok, -1 = не открывается. out: Vec of FileEntry */
-int  filelist_parse(const char *path, Vec *out);
+int  filelist_parse    (const char *path, Vec *out);
+int  filelist_parse_buf(const char *text, Vec *out);
 
 #endif

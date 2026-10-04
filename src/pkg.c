@@ -115,6 +115,24 @@ void pkginfo_print(const PkgInfo *p) {
 }
 
 /* ── .FILELIST ──────────────────────────────────────────────── */
+static void filelist_add_line(char *line, Vec *out) {
+    char *s = trim(line);
+    if (!*s || *s == '#') return;
+
+    FileEntry *fe = vec_push(out);
+    fe->path = NULL;
+    fe->hash = NULL;
+
+    char *sep = strpbrk(s, " \t");
+    if (sep && (size_t)(sep - s) == 64 && is_hex(s, 64)) {
+        *sep = '\0';
+        fe->hash = xstrdup(s);
+        fe->path = xstrdup(trim(sep + 1));
+    } else {
+        fe->path = xstrdup(s);
+    }
+}
+
 int filelist_parse(const char *path, Vec *out) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
@@ -122,25 +140,20 @@ int filelist_parse(const char *path, Vec *out) {
     char  *line = NULL;
     size_t cap  = 0;
 
-    while (getline(&line, &cap, f) != -1) {
-        char *s = trim(line);
-        if (!*s || *s == '#') continue;
-
-        FileEntry *fe = vec_push(out);
-        fe->path = NULL;
-        fe->hash = NULL;
-
-        char *sep = strpbrk(s, " \t");
-        if (sep && (size_t)(sep - s) == 64 && is_hex(s, 64)) {
-            *sep = '\0';
-            fe->hash = xstrdup(s);
-            fe->path = xstrdup(trim(sep + 1));
-        } else {
-            fe->path = xstrdup(s);
-        }
-    }
+    while (getline(&line, &cap, f) != -1)
+        filelist_add_line(line, out);
 
     free(line);
     fclose(f);
+    return 0;
+}
+
+int filelist_parse_buf(const char *text, Vec *out) {
+    char *copy = xstrdup(text);
+    char *save = NULL;
+    for (char *line = strtok_r(copy, "\n", &save); line;
+         line = strtok_r(NULL, "\n", &save))
+        filelist_add_line(line, out);
+    free(copy);
     return 0;
 }

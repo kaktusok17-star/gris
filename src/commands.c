@@ -146,16 +146,82 @@ int cmd_info(int argc, char **argv) {
 }
 
 /* ── files ───────────────────────────────────────────────────── */
+static int files_from_db(const char *name, Vec *out) {
+    return db_read_filelist(name, out);
+}
+
+static int files_from_repo(const char *name, Vec *out) {
+    char *index_path = db_path("repo/core.index");
+    Index idx;
+    if (index_load(index_path, &idx) != 0) {
+        fprintf(stderr,
+            "gris: files: пакет '%s' не установлен, нет индекса. Запустите 'gris sync'.\n",
+            name);
+        free(index_path);
+        return -1;
+    }
+    free(index_path);
+
+    IndexEntry *e = index_find(&idx, name);
+    if (!e) {
+        fprintf(stderr, "gris: files: пакет '%s' не установлен и не найден в индексе\n",
+                name);
+        index_free(&idx);
+        return -1;
+    }
+
+    char *cache_dir = db_path("cache");
+    fs_mkdir_p(cache_dir, 0755);
+
+    const char *basename = strrchr(e->url, '/');
+    basename = basename ? basename + 1 : e->url;
+
+    char cached[4096];
+    snprintf(cached, sizeof(cached), "%s/%s", cache_dir, basename);
+
+    if (!fs_exists(cached)) {
+        printf("downloading: %s\n", e->url);
+        if (download_to_file(e->url, cached) != 0) {
+            fprintf(stderr, "gris: не могу скачать %s\n", e->url);
+            free(cache_dir);
+            index_free(&idx);
+            return -1;
+        }
+    }
+
+    free(cache_dir);
+
+    char *targv[] = { "tar", "-xOJf", cached, ".FILELIST", NULL };
+    char *text = NULL;
+    if (shell_capture(targv, &text, NULL) != 0) {
+        fprintf(stderr, "gris: не могу прочитать .FILELIST из %s\n", cached);
+        free(text);
+        index_free(&idx);
+        return -1;
+    }
+
+    filelist_parse_buf(text, out);
+    free(text);
+    index_free(&idx);
+    return 0;
+}
+
 int cmd_files(int argc, char **argv) {
     if (argc < 1) {
         fprintf(stderr, "gris: files: укажите имя пакета\n");
         return 2;
     }
 
+    const char *name = argv[0];
+
     Vec v;
     vec_init(&v, sizeof(FileEntry));
-    if (db_read_filelist(argv[0], &v) != 0) {
-        fprintf(stderr, "gris: files: пакет '%s' не установлен\n", argv[0]);
+
+    int rc = db_is_installed(name)
+           ? files_from_db(name, &v)
+           : files_from_repo(name, &v);
+
+    if (rc != 0) {
         vec_free(&v);
         return 1;
     }
@@ -398,8 +464,6 @@ int cmd_install(int argc, char **argv) {
 }
 
 /* ── remove ──────────────────────────────────────────────────── */
-/* Найти установленные пакеты, которые зависят от target.
-   Заполняет Vec of char* (имена зависимых). */
 static void find_dependents(const char *target, Vec *dependents) {
     Vec installed;
     vec_init(&installed, sizeof(char *));
@@ -432,7 +496,6 @@ static int remove_one(const char *name) {
         return -1;
     }
 
-    /* Проверка обратных зависимостей, если не --force. */
     if (!g_force_remove) {
         Vec dependents;
         vec_init(&dependents, sizeof(char *));
@@ -487,8 +550,6 @@ int cmd_remove(int argc, char **argv) {
         return 2;
     }
 
-    /* Парсим --force в любом месте аргументов. */
-    int   first = 0;
     char *names[64];
     int   nnames = 0;
 
@@ -499,7 +560,6 @@ int cmd_remove(int argc, char **argv) {
             names[nnames++] = argv[i];
         }
     }
-    (void)first;
 
     if (nnames == 0) {
         fprintf(stderr, "gris: remove: укажите имя пакета\n");
@@ -545,7 +605,7 @@ int cmd_upgrade(int argc, char **argv) {
         if (vercmp(e->version, pi.version) > 0) {
             printf("upgrading: %s (%s -> %s)\n", name, pi.version, e->version);
 
-            g_force_remove = 1;   /* для внутреннего remove — обходим зависимости */
+            g_force_remove = 1;
             char *rargv[] = { name };
             if (cmd_remove(1, rargv) != 0) { rc = 1; upgraded = -1; }
             else if (install_by_name(name) != 0) { rc = 1; upgraded = -1; }
