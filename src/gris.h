@@ -1,7 +1,7 @@
 #ifndef GRIS_H
 #define GRIS_H
 
-#define GRIS_VERSION "0.1.0"
+#define GRIS_VERSION "1.0.0"
 
 int cmd_sync   (int argc, char **argv);
 int cmd_install(int argc, char **argv);
