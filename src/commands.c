@@ -21,6 +21,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Глобальный флаг: --force для remove */
+static int g_force_remove = 0;
+
 /* ── sync ────────────────────────────────────────────────────── */
 int cmd_sync(int argc, char **argv) {
     (void)argc; (void)argv;
@@ -395,10 +398,58 @@ int cmd_install(int argc, char **argv) {
 }
 
 /* ── remove ──────────────────────────────────────────────────── */
+/* Найти установленные пакеты, которые зависят от target.
+   Заполняет Vec of char* (имена зависимых). */
+static void find_dependents(const char *target, Vec *dependents) {
+    Vec installed;
+    vec_init(&installed, sizeof(char *));
+    db_list_installed(&installed);
+
+    for (size_t i = 0; i < installed.len; i++) {
+        char *name = *(char **)vec_get(&installed, i);
+        if (strcmp(name, target) == 0) { free(name); continue; }
+
+        PkgInfo pi;
+        if (db_read_pkginfo(name, &pi) == 0) {
+            for (size_t j = 0; j < pi.ndepends; j++) {
+                char dep_name[256];
+                if (deps_parse_name(pi.depends[j], dep_name, sizeof(dep_name)) == 0
+                    && strcmp(dep_name, target) == 0) {
+                    *(char **)vec_push(dependents) = xstrdup(name);
+                    break;
+                }
+            }
+            pkginfo_free(&pi);
+        }
+        free(name);
+    }
+    vec_free(&installed);
+}
+
 static int remove_one(const char *name) {
     if (!db_is_installed(name)) {
         fprintf(stderr, "gris: remove: пакет '%s' не установлен\n", name);
         return -1;
+    }
+
+    /* Проверка обратных зависимостей, если не --force. */
+    if (!g_force_remove) {
+        Vec dependents;
+        vec_init(&dependents, sizeof(char *));
+        find_dependents(name, &dependents);
+
+        if (dependents.len > 0) {
+            fprintf(stderr, "gris: remove: от пакета '%s' зависят:\n", name);
+            for (size_t i = 0; i < dependents.len; i++) {
+                char *dep = *(char **)vec_get(&dependents, i);
+                fprintf(stderr, "  - %s\n", dep);
+                free(dep);
+            }
+            fprintf(stderr, "Используйте --force, чтобы удалить принудительно.\n");
+            vec_free(&dependents);
+            return -1;
+        }
+        vec_free(&dependents);
     }
 
     Vec files;
@@ -436,9 +487,28 @@ int cmd_remove(int argc, char **argv) {
         return 2;
     }
 
+    /* Парсим --force в любом месте аргументов. */
+    int   first = 0;
+    char *names[64];
+    int   nnames = 0;
+
+    for (int i = 0; i < argc && nnames < 64; i++) {
+        if (strcmp(argv[i], "--force") == 0) {
+            g_force_remove = 1;
+        } else {
+            names[nnames++] = argv[i];
+        }
+    }
+    (void)first;
+
+    if (nnames == 0) {
+        fprintf(stderr, "gris: remove: укажите имя пакета\n");
+        return 2;
+    }
+
     int rc = 0;
-    for (int i = 0; i < argc; i++)
-        if (remove_one(argv[i]) != 0) rc = 1;
+    for (int i = 0; i < nnames; i++)
+        if (remove_one(names[i]) != 0) rc = 1;
     return rc;
 }
 
@@ -475,10 +545,12 @@ int cmd_upgrade(int argc, char **argv) {
         if (vercmp(e->version, pi.version) > 0) {
             printf("upgrading: %s (%s -> %s)\n", name, pi.version, e->version);
 
+            g_force_remove = 1;   /* для внутреннего remove — обходим зависимости */
             char *rargv[] = { name };
             if (cmd_remove(1, rargv) != 0) { rc = 1; upgraded = -1; }
             else if (install_by_name(name) != 0) { rc = 1; upgraded = -1; }
             else upgraded++;
+            g_force_remove = 0;
         }
 
         pkginfo_free(&pi);
@@ -545,7 +617,6 @@ int cmd_build(int argc, char **argv) {
         return 1;
     }
 
-    /* Генерируем .FILELIST */
     char fl_path[4096];
     snprintf(fl_path, sizeof(fl_path), "%s/.FILELIST", destdir);
 
@@ -558,7 +629,7 @@ int cmd_build(int argc, char **argv) {
     build_walk(destdir, "", fl);
     fclose(fl);
 
-    const char *arch   = pi.arch ? pi.arch : "x86_64";
+    const char *arch = pi.arch ? pi.arch : "x86_64";
     char        output[4096];
     snprintf(output, sizeof(output), "%s-%s-%s.gris", pi.name, pi.version, arch);
 
