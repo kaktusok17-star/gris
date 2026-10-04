@@ -7,10 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── файловый режим (для локальных .gris) ───────────────────── */
 int peek_pkginfo(const char *gris_file, PkgInfo *out) {
     char *argv[] = {
-        "tar", "-xOJf", (char *)gris_file, ".PKGINFO", NULL
+        "tar", "-xOJf", (char *)gris_file, "--wildcards", "*PKGINFO", NULL
     };
     char *text = NULL;
     if (shell_capture(argv, &text, NULL) != 0) {
@@ -76,14 +75,14 @@ static DepNode *find_node(Vec *nodes, const char *name) {
 static int resolve_recursive(const char *gris_file, Vec *nodes) {
     PkgInfo info;
     if (peek_pkginfo(gris_file, &info) != 0) {
-        fprintf(stderr, "gris: не могу прочитать .PKGINFO из %s\n", gris_file);
+        fprintf(stderr, "gris: cannot read .PKGINFO from %s\n", gris_file);
         return -1;
     }
 
     DepNode *existing = find_node(nodes, info.name);
     if (existing) {
         if (existing->state == 1) {
-            fprintf(stderr, "gris: циклическая зависимость: %s\n", info.name);
+            fprintf(stderr, "gris: dependency cycle: %s\n", info.name);
             pkginfo_free(&info);
             return -1;
         }
@@ -104,16 +103,15 @@ static int resolve_recursive(const char *gris_file, Vec *nodes) {
         if (deps_parse_name(n->info.depends[i], dep_name, sizeof(dep_name)) != 0)
             continue;
 
-        /* Уже установлена в системе? Пропускаем. */
         if (db_is_installed(dep_name)) {
-            log_debug("зависимость '%s' уже установлена, пропускаем", dep_name);
+            log_debug("dependency '%s' already installed, skipping", dep_name);
             continue;
         }
 
         char *dep_file = deps_find_gris(dir, dep_name);
         if (!dep_file) {
             fprintf(stderr,
-                "gris: не найдена зависимость '%s' (нужна пакету '%s') ни в системе, ни в %s\n",
+                "gris: dependency '%s' (needed by '%s') not found in system or in %s\n",
                 dep_name, n->name, dir);
             free(dir);
             return -1;
@@ -136,7 +134,6 @@ int deps_resolve(const char *gris_file, Vec *nodes) {
     return resolve_recursive(gris_file, nodes);
 }
 
-/* ── режим по индексу (для install по имени) ────────────────── */
 static int resolve_index_rec(Index *idx, const char *name,
                              Vec *order, Vec *in_progress) {
     for (size_t i = 0; i < order->len; i++) {
@@ -147,14 +144,14 @@ static int resolve_index_rec(Index *idx, const char *name,
     for (size_t i = 0; i < in_progress->len; i++) {
         char *n = *(char **)vec_get(in_progress, i);
         if (strcmp(n, name) == 0) {
-            fprintf(stderr, "gris: циклическая зависимость: %s\n", name);
+            fprintf(stderr, "gris: dependency cycle: %s\n", name);
             return -1;
         }
     }
 
     IndexEntry *e = index_find(idx, name);
     if (!e) {
-        fprintf(stderr, "gris: пакет '%s' не найден в индексе\n", name);
+        fprintf(stderr, "gris: package '%s' not found in index\n", name);
         return -1;
     }
 

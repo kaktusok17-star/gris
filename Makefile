@@ -15,5 +15,6 @@ $(BIN): $(OBJ)
 
 clean:
 	rm -f $(OBJ) $(BIN)
-
-.PHONY: all clean
+test: $(BIN)
+	./tests/run.sh
+.PHONY: all install clean test

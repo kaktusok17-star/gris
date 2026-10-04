@@ -21,7 +21,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Глобальный флаг: --force для remove */
 static int g_force_remove = 0;
 
 /* ── sync ────────────────────────────────────────────────────── */
@@ -30,7 +29,7 @@ int cmd_sync(int argc, char **argv) {
 
     char *repo_dir = db_path("repo");
     if (fs_mkdir_p(repo_dir, 0755) != 0) {
-        fprintf(stderr, "gris: не могу создать %s\n", repo_dir);
+        fprintf(stderr, "gris: cannot create %s\n", repo_dir);
         free(repo_dir);
         return 1;
     }
@@ -43,7 +42,7 @@ int cmd_sync(int argc, char **argv) {
 
     printf("syncing: %s\n", url);
     if (download_to_file(url, index_path) != 0) {
-        fprintf(stderr, "gris: не могу скачать индекс\n");
+        fprintf(stderr, "gris: cannot download index\n");
         free(repo_dir);
         return 1;
     }
@@ -58,7 +57,7 @@ int cmd_clean(int argc, char **argv) {
     (void)argc; (void)argv;
     char *cache = db_path("cache");
     if (fs_exists(cache) && fs_rm_rf(cache) != 0) {
-        fprintf(stderr, "gris: не могу очистить %s\n", cache);
+        fprintf(stderr, "gris: cannot clean %s\n", cache);
         free(cache);
         return 1;
     }
@@ -70,21 +69,20 @@ int cmd_clean(int argc, char **argv) {
 /* ── search ──────────────────────────────────────────────────── */
 int cmd_search(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "gris: search: укажите regex\n");
+        fprintf(stderr, "gris: search: regex required\n");
         return 2;
     }
 
     regex_t re;
     if (regcomp(&re, argv[0], REG_EXTENDED | REG_NOSUB) != 0) {
-        fprintf(stderr, "gris: некорректный regex: %s\n", argv[0]);
+        fprintf(stderr, "gris: invalid regex: %s\n", argv[0]);
         return 2;
     }
 
     char *index_path = db_path("repo/core.index");
     Index idx;
     if (index_load(index_path, &idx) != 0) {
-        fprintf(stderr, "gris: не могу прочитать %s. Запустите 'gris sync'.\n",
-                index_path);
+        fprintf(stderr, "gris: cannot read %s. Run 'gris sync'.\n", index_path);
         free(index_path);
         regfree(&re);
         return 1;
@@ -131,13 +129,13 @@ int cmd_list(int argc, char **argv) {
 /* ── info ────────────────────────────────────────────────────── */
 int cmd_info(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "gris: info: укажите имя пакета\n");
+        fprintf(stderr, "gris: info: package name required\n");
         return 2;
     }
 
     PkgInfo pi;
     if (db_read_pkginfo(argv[0], &pi) != 0) {
-        fprintf(stderr, "gris: info: пакет '%s' не установлен\n", argv[0]);
+        fprintf(stderr, "gris: info: package '%s' is not installed\n", argv[0]);
         return 1;
     }
     pkginfo_print(&pi);
@@ -155,7 +153,7 @@ static int files_from_repo(const char *name, Vec *out) {
     Index idx;
     if (index_load(index_path, &idx) != 0) {
         fprintf(stderr,
-            "gris: files: пакет '%s' не установлен, нет индекса. Запустите 'gris sync'.\n",
+            "gris: files: package '%s' not installed, no index. Run 'gris sync'.\n",
             name);
         free(index_path);
         return -1;
@@ -164,7 +162,7 @@ static int files_from_repo(const char *name, Vec *out) {
 
     IndexEntry *e = index_find(&idx, name);
     if (!e) {
-        fprintf(stderr, "gris: files: пакет '%s' не установлен и не найден в индексе\n",
+        fprintf(stderr, "gris: files: package '%s' is not installed and not in index\n",
                 name);
         index_free(&idx);
         return -1;
@@ -182,7 +180,7 @@ static int files_from_repo(const char *name, Vec *out) {
     if (!fs_exists(cached)) {
         printf("downloading: %s\n", e->url);
         if (download_to_file(e->url, cached) != 0) {
-            fprintf(stderr, "gris: не могу скачать %s\n", e->url);
+            fprintf(stderr, "gris: cannot download %s\n", e->url);
             free(cache_dir);
             index_free(&idx);
             return -1;
@@ -191,10 +189,10 @@ static int files_from_repo(const char *name, Vec *out) {
 
     free(cache_dir);
 
-    char *targv[] = { "tar", "-xOJf", cached, ".FILELIST", NULL };
+    char *targv[] = { "tar", "-xOJf", cached, "--wildcards", "*FILELIST", NULL };
     char *text = NULL;
     if (shell_capture(targv, &text, NULL) != 0) {
-        fprintf(stderr, "gris: не могу прочитать .FILELIST из %s\n", cached);
+        fprintf(stderr, "gris: cannot read .FILELIST from %s\n", cached);
         free(text);
         index_free(&idx);
         return -1;
@@ -208,7 +206,7 @@ static int files_from_repo(const char *name, Vec *out) {
 
 int cmd_files(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "gris: files: укажите имя пакета\n");
+        fprintf(stderr, "gris: files: package name required\n");
         return 2;
     }
 
@@ -249,29 +247,29 @@ static int verify_sidecar_sha256(const char *gris_file) {
     int got = fscanf(f, "%64s", expected);
     fclose(f);
     if (got != 1) {
-        fprintf(stderr, "gris: пустой .sha256: %s\n", sidecar);
+        fprintf(stderr, "gris: empty .sha256: %s\n", sidecar);
         return -1;
     }
 
     char actual[65];
     if (hash_file_sha256(gris_file, actual) != 0) {
-        fprintf(stderr, "gris: не могу посчитать sha256 для %s\n", gris_file);
+        fprintf(stderr, "gris: cannot compute sha256 for %s\n", gris_file);
         return -1;
     }
 
     if (strcmp(expected, actual) != 0) {
-        fprintf(stderr, "gris: sha256 не совпал для %s\n", gris_file);
-        fprintf(stderr, "  ожидался: %s\n", expected);
-        fprintf(stderr, "  получен:  %s\n", actual);
+        fprintf(stderr, "gris: sha256 mismatch for %s\n", gris_file);
+        fprintf(stderr, "  expected: %s\n", expected);
+        fprintf(stderr, "  got:      %s\n", actual);
         return -1;
     }
     return 0;
 }
 
-/* ── install одного локального .gris ─────────────────────────── */
+/* ── install ─────────────────────────────────────────────────── */
 static int install_one(const char *gris_file) {
     if (!fs_exists(gris_file)) {
-        fprintf(stderr, "gris: install: файл не найден: %s\n", gris_file);
+        fprintf(stderr, "gris: install: file not found: %s\n", gris_file);
         return -1;
     }
 
@@ -285,7 +283,7 @@ static int install_one(const char *gris_file) {
     }
 
     if (archive_extract(gris_file, tmp) != 0) {
-        fprintf(stderr, "gris: install: не могу распаковать %s\n", gris_file);
+        fprintf(stderr, "gris: install: cannot unpack %s\n", gris_file);
         fs_rm_rf(tmp);
         return -1;
     }
@@ -296,14 +294,14 @@ static int install_one(const char *gris_file) {
 
     PkgInfo pi;
     if (pkginfo_parse(pi_path, &pi) != 0 || !pi.name || !pi.version) {
-        fprintf(stderr, "gris: install: нет корректного .PKGINFO в %s\n", gris_file);
+        fprintf(stderr, "gris: install: no valid .PKGINFO in %s\n", gris_file);
         pkginfo_free(&pi);
         fs_rm_rf(tmp);
         return -1;
     }
 
     if (db_is_installed(pi.name)) {
-        fprintf(stderr, "gris: install: %s уже установлен\n", pi.name);
+        fprintf(stderr, "gris: install: %s is already installed\n", pi.name);
         pkginfo_free(&pi);
         fs_rm_rf(tmp);
         return -1;
@@ -312,7 +310,7 @@ static int install_one(const char *gris_file) {
     Vec files;
     vec_init(&files, sizeof(FileEntry));
     if (filelist_parse(fl_path, &files) != 0) {
-        fprintf(stderr, "gris: install: нет .FILELIST в %s\n", gris_file);
+        fprintf(stderr, "gris: install: no .FILELIST in %s\n", gris_file);
         pkginfo_free(&pi);
         fs_rm_rf(tmp);
         return -1;
@@ -334,7 +332,7 @@ static int install_one(const char *gris_file) {
 
         struct stat st;
         if (stat(src, &st) < 0) {
-            fprintf(stderr, "gris: install: файл из FILELIST не найден: %s\n",
+            fprintf(stderr, "gris: install: file from FILELIST missing: %s\n",
                     fe->path);
             continue;
         }
@@ -343,8 +341,7 @@ static int install_one(const char *gris_file) {
             fs_mkdir_p(dst, (unsigned)(st.st_mode & 07777));
         } else {
             if (fs_copy(src, dst) != 0)
-                fprintf(stderr, "gris: install: не могу скопировать %s\n",
-                        fe->path);
+                fprintf(stderr, "gris: install: cannot copy %s\n", fe->path);
         }
     }
 
@@ -371,18 +368,16 @@ static int install_one(const char *gris_file) {
     return 0;
 }
 
-/* ── установка по имени из репозитория ───────────────────────── */
 static int install_by_name(const char *name) {
     if (db_is_installed(name)) {
-        fprintf(stderr, "gris: install: %s уже установлен\n", name);
+        fprintf(stderr, "gris: install: %s is already installed\n", name);
         return -1;
     }
 
     char *index_path = db_path("repo/core.index");
     Index idx;
     if (index_load(index_path, &idx) != 0) {
-        fprintf(stderr, "gris: не могу прочитать %s. Запустите 'gris sync'.\n",
-                index_path);
+        fprintf(stderr, "gris: cannot read %s. Run 'gris sync'.\n", index_path);
         free(index_path);
         return -1;
     }
@@ -414,14 +409,14 @@ static int install_by_name(const char *name) {
         if (!fs_exists(cached)) {
             printf("downloading: %s\n", e->url);
             if (download_to_file(e->url, cached) != 0) {
-                fprintf(stderr, "gris: не могу скачать %s\n", e->url);
+                fprintf(stderr, "gris: cannot download %s\n", e->url);
                 rc = 1;
                 break;
             }
         }
 
         if (e->sha256 && *e->sha256) {
-            char sidecar[4096];
+            char sidecar[4200];
             snprintf(sidecar, sizeof(sidecar), "%s.sha256", cached);
             FILE *f = fopen(sidecar, "w");
             if (f) { fprintf(f, "%s\n", e->sha256); fclose(f); }
@@ -436,10 +431,9 @@ static int install_by_name(const char *name) {
     return rc;
 }
 
-/* ── dispatch install ────────────────────────────────────────── */
 int cmd_install(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "gris: install: укажите .gris файл или имя пакета\n");
+        fprintf(stderr, "gris: install: specify .gris file or package name\n");
         return 2;
     }
 
@@ -492,7 +486,7 @@ static void find_dependents(const char *target, Vec *dependents) {
 
 static int remove_one(const char *name) {
     if (!db_is_installed(name)) {
-        fprintf(stderr, "gris: remove: пакет '%s' не установлен\n", name);
+        fprintf(stderr, "gris: remove: package '%s' is not installed\n", name);
         return -1;
     }
 
@@ -502,13 +496,13 @@ static int remove_one(const char *name) {
         find_dependents(name, &dependents);
 
         if (dependents.len > 0) {
-            fprintf(stderr, "gris: remove: от пакета '%s' зависят:\n", name);
+            fprintf(stderr, "gris: remove: package '%s' is required by:\n", name);
             for (size_t i = 0; i < dependents.len; i++) {
                 char *dep = *(char **)vec_get(&dependents, i);
                 fprintf(stderr, "  - %s\n", dep);
                 free(dep);
             }
-            fprintf(stderr, "Используйте --force, чтобы удалить принудительно.\n");
+            fprintf(stderr, "Use --force to remove anyway.\n");
             vec_free(&dependents);
             return -1;
         }
@@ -518,7 +512,7 @@ static int remove_one(const char *name) {
     Vec files;
     vec_init(&files, sizeof(FileEntry));
     if (db_read_filelist(name, &files) != 0) {
-        fprintf(stderr, "gris: remove: не могу прочитать FILELIST пакета '%s'\n", name);
+        fprintf(stderr, "gris: remove: cannot read FILELIST of '%s'\n", name);
         vec_free(&files);
         return -1;
     }
@@ -546,7 +540,7 @@ static int remove_one(const char *name) {
 
 int cmd_remove(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "gris: remove: укажите имя пакета\n");
+        fprintf(stderr, "gris: remove: package name required\n");
         return 2;
     }
 
@@ -562,7 +556,7 @@ int cmd_remove(int argc, char **argv) {
     }
 
     if (nnames == 0) {
-        fprintf(stderr, "gris: remove: укажите имя пакета\n");
+        fprintf(stderr, "gris: remove: package name required\n");
         return 2;
     }
 
@@ -579,8 +573,7 @@ int cmd_upgrade(int argc, char **argv) {
     char *index_path = db_path("repo/core.index");
     Index idx;
     if (index_load(index_path, &idx) != 0) {
-        fprintf(stderr, "gris: не могу прочитать %s. Запустите 'gris sync'.\n",
-                index_path);
+        fprintf(stderr, "gris: cannot read %s. Run 'gris sync'.\n", index_path);
         free(index_path);
         return 1;
     }
@@ -661,7 +654,7 @@ static void build_walk(const char *dir, const char *prefix, FILE *flist) {
 
 int cmd_build(int argc, char **argv) {
     if (argc < 1) {
-        fprintf(stderr, "gris: build: укажите DESTDIR\n");
+        fprintf(stderr, "gris: build: DESTDIR required\n");
         return 2;
     }
 
@@ -672,7 +665,7 @@ int cmd_build(int argc, char **argv) {
 
     PkgInfo pi;
     if (pkginfo_parse(pi_path, &pi) != 0 || !pi.name || !pi.version) {
-        fprintf(stderr, "gris: build: нет корректного .PKGINFO в %s\n", destdir);
+        fprintf(stderr, "gris: build: no valid .PKGINFO in %s\n", destdir);
         pkginfo_free(&pi);
         return 1;
     }
@@ -682,7 +675,7 @@ int cmd_build(int argc, char **argv) {
 
     FILE *fl = fopen(fl_path, "w");
     if (!fl) {
-        fprintf(stderr, "gris: build: не могу создать %s\n", fl_path);
+        fprintf(stderr, "gris: build: cannot create %s\n", fl_path);
         pkginfo_free(&pi);
         return 1;
     }
@@ -700,7 +693,7 @@ int cmd_build(int argc, char **argv) {
     printf("building: %s\n", output);
     int rc = shell_run(targv);
     if (rc != 0) {
-        fprintf(stderr, "gris: build: tar вернул %d\n", rc);
+        fprintf(stderr, "gris: build: tar returned %d\n", rc);
         pkginfo_free(&pi);
         return 1;
     }
