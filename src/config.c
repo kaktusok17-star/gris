@@ -27,7 +27,7 @@ void config_init(void) {
     const char *repo = getenv("GRIS_REPO");
     g_cfg.repo_url = xstrdup((repo && *repo)
         ? repo
-        : "https://repo.aethel.linux/core/x86_64");
+        : "https://kaktusok17-star.github.io/aethel-repo/core/x86_64");
 
     const char *dbg = getenv("GRIS_DEBUG");
     g_cfg.debug = (dbg && *dbg && strcmp(dbg, "0") != 0);
