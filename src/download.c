@@ -11,9 +11,7 @@ int download_to_file(const char *url, const char *dest) {
         return fs_copy(src, dest) == 0 ? 0 : -1;
     }
 
-    /* HTTP/HTTPS — через curl с прогресс-баром.
-       Прогресс идёт в stderr, который не перехватывается
-       shell_run() — он наследуется от родителя. */
+    /* HTTP/HTTPS — через curl с прогресс-баром. */
     char *argv[] = {
         "curl", "-fL", "--progress-bar",
         "--output", (char *)dest,
